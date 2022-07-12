@@ -1,10 +1,7 @@
-const getBoundary = (contentType) => {
-  const [, boundaryString] = contentType.split(';');
-  const [, boundary] = boundaryString.split('=');
-  return '--'.concat(boundary.trim());
-};
+const TCRLF = new Buffer.from('\r\n\r\n');
+const CRLF = new Buffer.from('\r\n');
 
-const splitFields = (content, boundary) => {
+const splitFormFields = (content, boundary) => {
   const fields = [];
   let boundaryStart = content.indexOf(boundary);
   while (boundaryStart != -1) {
@@ -18,44 +15,47 @@ const splitFields = (content, boundary) => {
   return fields.slice(0, -1);
 };
 
-const parseDispositions = (dispositionString) => {
-  const dispositions = dispositionString.split(';').slice(1);
-  return dispositions.reduce((parsedDisp, disposition) => {
-    const [key, value] = disposition.split('=');
-    parsedDisp[key.trim()] = value.trim().slice(1, -1);
-    return parsedDisp;
-  }, {});
+const removeQuotes = (text) => {
+  if (text.startsWith('\"') && text.endsWith('\"')) {
+    return text.slice(1, -1);
+  }
+  return text;
+};
+
+const parseHeader = (text) => {
+  const fields = {};
+  const allFields = text.split(';');
+  allFields.forEach(fieldString => {
+    const [key, value] = fieldString.split(/[:=]/);
+    fields[key.trim().toLowerCase()] = value;
+  });
+  return fields;
+};
+
+const getBoundary = (contentType) => {
+  const { boundary } = parseHeader(contentType);
+  return '--'.concat(boundary.trim());
 };
 
 const parseHeaders = (rawHeaders) => {
-  const headers = {};
-
-  const headerStrings = rawHeaders.trim().split('\r\n');
-  headerStrings.forEach(headerString => {
-
-    const [name, value] = headerString.split(':');
-    headers[name.trim()] = value.trim();
-  });
-
-  const parsedDisp = parseDispositions(headers['Content-Disposition']);
-  Object.entries(parsedDisp).forEach(([key, value]) => {
-    headers[key] = value;
-  });
-
+  const headersString = rawHeaders.trim().split(CRLF).join(';');
+  const headers = parseHeader(headersString);
+  for (const key in headers) {
+    headers[key] = removeQuotes(headers[key]);
+  }
   return headers;
 };
 
-
 const parseField = (rawField) => {
-  const EOL = new Buffer.from('\r\n\r\n');
-  const rawHeaders = rawField.slice(0, rawField.indexOf(EOL));
-  const value = rawField.slice(rawHeaders.length + EOL.length, -2);
+  const rawHeaders = rawField.slice(0, rawField.indexOf(TCRLF));
+  const value = rawField.slice(rawHeaders.length + TCRLF.length, -CRLF.length);
   const headers = parseHeaders(rawHeaders.toString());
   return { headers, value };
 };
 
 const multipartFormParser = (req, res, next) => {
   const contentType = req.headers['content-type'];
+
   if (!contentType || !contentType.startsWith('multipart/form-data')) {
     next();
     return;
@@ -63,9 +63,8 @@ const multipartFormParser = (req, res, next) => {
 
   const boundary = getBoundary(contentType);
   const boundaryBuffer = new Buffer.from(boundary, 'utf-8');
-  const fields = splitFields(req.body, boundaryBuffer);
+  const fields = splitFormFields(req.body, boundaryBuffer);
   const parsedFields = fields.map(parseField);
-
   const body = {};
 
   parsedFields.forEach((field) => {
